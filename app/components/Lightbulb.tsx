@@ -70,7 +70,7 @@ export default function Lightbulb() {
     }
     
     // Set polling interval - shorter if we're in polling-only mode or if forced
-    const pollInterval = (usePollingOnly || forceShortInterval) ? 2000 : 5000;
+    const pollInterval = (usePollingOnly || forceShortInterval) ? 1500 : 5000; // Reduced to 1.5 seconds for better responsiveness
     
     pollIntervalRef.current = setInterval(() => {
       fetchLightbulbState();
