@@ -14,7 +14,7 @@ export default function ConnectionError() {
           <li>Network connectivity issues</li>
         </ul>
         <p className="text-gray-400 text-sm">
-          Please check your .env.local file and make sure you've set up Supabase correctly according to the README.
+          Please check your .env.local file and make sure you&apos;ve set up Supabase correctly according to the README.
         </p>
       </div>
     </div>

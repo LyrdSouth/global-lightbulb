@@ -129,7 +129,7 @@ export default function Lightbulb() {
           </p>
           <div className="bg-gray-800 p-4 rounded mb-4 overflow-auto">
             <pre className="text-xs text-gray-300 whitespace-pre-wrap">
-              {`1. Make sure you've created a Supabase account and project
+              {`1. Make sure you&apos;ve created a Supabase account and project
 2. Run the SQL in supabase/schema.sql in the SQL Editor
 3. Update .env.local with your Supabase URL and anon key
 4. Enable realtime for the lightbulb table in Supabase dashboard`}
