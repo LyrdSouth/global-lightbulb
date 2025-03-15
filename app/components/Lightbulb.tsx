@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '../supabase';
 import { handleSupabaseError } from '../utils/errorHandler';
 
@@ -11,6 +11,77 @@ export default function Lightbulb() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [toggleLoading, setToggleLoading] = useState(false);
   const [realtimeStatus, setRealtimeStatus] = useState<string | null>(null);
+  const [usePollingOnly, setUsePollingOnly] = useState(false);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const lastUpdateTimeRef = useRef<number>(Date.now());
+
+  // Function to fetch the current lightbulb state
+  const fetchLightbulbState = async () => {
+    try {
+      console.log('Fetching lightbulb state...');
+      const { data, error } = await supabase
+        .from('lightbulb')
+        .select('is_on, updated_at')
+        .single();
+      
+      if (error) {
+        console.error('Supabase error:', error);
+        throw error;
+      }
+      
+      console.log('Lightbulb data:', data);
+      if (data) {
+        // Only update if the state has changed or it's the initial load
+        if (loading || data.is_on !== isOn) {
+          setIsOn(data.is_on);
+          lastUpdateTimeRef.current = Date.now();
+          
+          if (!loading) {
+            // Flash a notification that an update was received via polling
+            setRealtimeStatus('Update received via polling!');
+            setTimeout(() => {
+              setRealtimeStatus(usePollingOnly ? 'Using polling (WebSocket unavailable)' : 'Real-time updates active');
+            }, 2000);
+          }
+        }
+      }
+      return true;
+    } catch (error) {
+      console.error('Error fetching lightbulb state:', error);
+      if (loading) {
+        setError(error as Error);
+        setErrorMessage(
+          'Could not connect to the lightbulb database. Make sure you have created the lightbulb table in Supabase and configured your environment variables correctly.'
+        );
+      }
+      return false;
+    } finally {
+      if (loading) {
+        setLoading(false);
+      }
+    }
+  };
+
+  // Set up polling with dynamic interval
+  const setupPolling = (forceShortInterval = false) => {
+    // Clear any existing interval
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+    }
+    
+    // Set polling interval - shorter if we're in polling-only mode or if forced
+    const pollInterval = (usePollingOnly || forceShortInterval) ? 2000 : 5000;
+    
+    pollIntervalRef.current = setInterval(() => {
+      fetchLightbulbState();
+    }, pollInterval);
+    
+    return () => {
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+      }
+    };
+  };
 
   useEffect(() => {
     // Check if Supabase URL and key are configured
@@ -26,90 +97,100 @@ export default function Lightbulb() {
     }
 
     // Initial fetch of lightbulb state
-    const fetchLightbulbState = async () => {
-      try {
-        console.log('Fetching lightbulb state...');
-        const { data, error } = await supabase
-          .from('lightbulb')
-          .select('is_on')
-          .single();
-        
-        if (error) {
-          console.error('Supabase error:', error);
-          throw error;
-        }
-        
-        console.log('Lightbulb data:', data);
-        if (data) {
-          setIsOn(data.is_on);
-        }
-      } catch (error) {
-        console.error('Error fetching lightbulb state:', error);
-        setError(error as Error);
-        setErrorMessage(
-          'Could not connect to the lightbulb database. Make sure you have created the lightbulb table in Supabase and configured your environment variables correctly.'
-        );
-      } finally {
-        setLoading(false);
-      }
-    };
-
     fetchLightbulbState();
 
-    // Set up real-time subscription
-    setupRealtimeSubscription();
-
-    // Poll for updates as a fallback
-    const pollInterval = setInterval(() => {
-      fetchLightbulbState();
-    }, 5000); // Poll every 5 seconds as a fallback
+    // Try to set up real-time subscription first
+    const cleanupRealtime = setupRealtimeSubscription();
+    
+    // Set up polling as a fallback
+    const cleanupPolling = setupPolling();
 
     return () => {
-      clearInterval(pollInterval);
+      cleanupRealtime();
+      cleanupPolling();
     };
   }, []);
 
+  // Effect to update polling interval when usePollingOnly changes
+  useEffect(() => {
+    return setupPolling();
+  }, [usePollingOnly]);
+
   // Separate function to set up real-time subscription
   const setupRealtimeSubscription = () => {
+    if (usePollingOnly) {
+      setRealtimeStatus('Using polling (WebSocket unavailable)');
+      return () => {};
+    }
+
     setRealtimeStatus('Connecting to real-time updates...');
     
     // First, remove any existing channels
-    supabase.removeAllChannels();
+    try {
+      supabase.removeAllChannels();
+    } catch (e) {
+      console.error('Error removing channels:', e);
+    }
     
-    // Create a new channel
-    const channel = supabase
-      .channel('lightbulb-changes')
-      .on('postgres_changes', 
-        { 
-          event: 'UPDATE', 
-          schema: 'public', 
-          table: 'lightbulb' 
-        }, 
-        (payload) => {
-          console.log('Received update:', payload);
-          setIsOn(payload.new.is_on);
-          setRealtimeStatus('Real-time updates active');
-          // Flash a notification that an update was received
-          setRealtimeStatus('Update received!');
-          setTimeout(() => setRealtimeStatus('Real-time updates active'), 2000);
-        }
-      )
-      .subscribe((status) => {
-        console.log('Subscription status:', status);
-        if (status === 'SUBSCRIBED') {
-          setRealtimeStatus('Real-time updates active');
-        } else if (status === 'CHANNEL_ERROR') {
-          console.error('Real-time subscription error');
-          setRealtimeStatus('Real-time updates failed - using polling fallback');
-        } else {
-          setRealtimeStatus(`Real-time status: ${status}`);
-        }
-      });
+    // Create a new channel with error handling
+    try {
+      const channel = supabase
+        .channel('lightbulb-changes')
+        .on('postgres_changes', 
+          { 
+            event: 'UPDATE', 
+            schema: 'public', 
+            table: 'lightbulb' 
+          }, 
+          (payload) => {
+            console.log('Received update via WebSocket:', payload);
+            setIsOn(payload.new.is_on);
+            lastUpdateTimeRef.current = Date.now();
+            
+            // Flash a notification that an update was received
+            setRealtimeStatus('Update received via WebSocket!');
+            setTimeout(() => setRealtimeStatus('Real-time updates active'), 2000);
+          }
+        )
+        .subscribe((status) => {
+          console.log('Subscription status:', status);
+          if (status === 'SUBSCRIBED') {
+            setRealtimeStatus('Real-time updates active');
+            // Reduce polling frequency when WebSocket is working
+            setupPolling(false);
+          } else if (status === 'CHANNEL_ERROR') {
+            console.error('Real-time subscription error - falling back to polling');
+            setRealtimeStatus('WebSocket connection failed - using polling');
+            setUsePollingOnly(true);
+            // Increase polling frequency when WebSocket fails
+            setupPolling(true);
+          } else if (status === 'TIMED_OUT') {
+            console.error('WebSocket connection timed out - using polling');
+            setRealtimeStatus('WebSocket timed out - using polling');
+            setUsePollingOnly(true);
+            // Increase polling frequency when WebSocket times out
+            setupPolling(true);
+          } else {
+            setRealtimeStatus(`Connection status: ${status}`);
+          }
+        });
 
-    // Return cleanup function
-    return () => {
-      supabase.removeChannel(channel);
-    };
+      // Return cleanup function
+      return () => {
+        try {
+          supabase.removeChannel(channel);
+        } catch (e) {
+          console.error('Error removing channel during cleanup:', e);
+        }
+      };
+    } catch (e) {
+      console.error('Error setting up real-time subscription:', e);
+      setRealtimeStatus('Error setting up WebSocket - using polling');
+      setUsePollingOnly(true);
+      // Increase polling frequency when WebSocket setup fails
+      setupPolling(true);
+      return () => {};
+    }
   };
 
   const toggleLight = async () => {
@@ -135,14 +216,15 @@ export default function Lightbulb() {
       }
       
       console.log('Toggle response:', data);
+      lastUpdateTimeRef.current = Date.now();
       
       // The subscription should handle the state update, but we'll update it here as well just in case
       if (data && data.length > 0) {
         setIsOn(data[0].is_on);
       }
       
-      // Reconnect to real-time updates to ensure we're getting updates
-      setupRealtimeSubscription();
+      // Force an immediate poll to ensure other clients get the update
+      fetchLightbulbState();
       
     } catch (error) {
       console.error('Error toggling lightbulb:', error);
@@ -155,7 +237,9 @@ export default function Lightbulb() {
 
   const handleReconnect = () => {
     setRealtimeStatus('Reconnecting...');
-    setupRealtimeSubscription();
+    setUsePollingOnly(false);
+    const cleanupRealtime = setupRealtimeSubscription();
+    return () => cleanupRealtime();
   };
 
   if (error) {
@@ -194,6 +278,12 @@ export default function Lightbulb() {
       </div>
     );
   }
+
+  // Calculate time since last update
+  const timeSinceUpdate = Math.floor((Date.now() - lastUpdateTimeRef.current) / 1000);
+  const lastUpdateText = timeSinceUpdate < 60 
+    ? `Last update: ${timeSinceUpdate} seconds ago` 
+    : `Last update: ${Math.floor(timeSinceUpdate / 60)} minutes ago`;
 
   return (
     <div className="flex flex-col items-center justify-center h-screen bg-gray-900 transition-colors duration-500">
@@ -244,23 +334,29 @@ export default function Lightbulb() {
         </div>
       )}
       
-      <div className="fixed bottom-20 left-0 right-0 flex justify-center">
-        <div className={`px-4 py-2 rounded-full text-xs ${
-          realtimeStatus === 'Real-time updates active' 
-            ? 'bg-green-900/50 text-green-400' 
-            : realtimeStatus === 'Update received!' 
-              ? 'bg-blue-900/50 text-blue-400 animate-pulse' 
-              : 'bg-yellow-900/50 text-yellow-400'
+      <div className="fixed bottom-20 left-0 right-0 flex flex-col items-center">
+        <div className={`px-4 py-2 rounded-full text-xs mb-2 ${
+          realtimeStatus?.includes('WebSocket') 
+            ? 'bg-blue-900/50 text-blue-400 animate-pulse' 
+            : realtimeStatus === 'Real-time updates active' 
+              ? 'bg-green-900/50 text-green-400' 
+              : realtimeStatus?.includes('polling') 
+                ? 'bg-yellow-900/50 text-yellow-400'
+                : 'bg-gray-900/50 text-gray-400'
         }`}>
           {realtimeStatus || 'Connecting...'}
-          {realtimeStatus !== 'Real-time updates active' && realtimeStatus !== 'Update received!' && (
+          {(realtimeStatus?.includes('failed') || realtimeStatus?.includes('timed out') || realtimeStatus?.includes('using polling')) && (
             <button 
               onClick={handleReconnect}
               className="ml-2 underline"
             >
-              Reconnect
+              Try WebSocket
             </button>
           )}
+        </div>
+        
+        <div className="text-xs text-gray-500">
+          {lastUpdateText}
         </div>
       </div>
     </div>

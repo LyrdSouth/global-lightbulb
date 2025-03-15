@@ -4,15 +4,21 @@ import { createClient } from '@supabase/supabase-js';
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || '';
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || '';
 
-// Create the Supabase client with enhanced real-time options
+// Create the Supabase client with more resilient configuration
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   realtime: {
     params: {
-      eventsPerSecond: 10,
+      eventsPerSecond: 5, // Reduced to avoid rate limiting
     },
+    // Add a timeout for WebSocket connections
+    timeout: 30000, // 30 seconds
   },
   auth: {
     persistSession: true,
     autoRefreshToken: true,
+  },
+  // Disable WebSocket retries to avoid console spam
+  global: {
+    fetch: (...args) => fetch(...args),
   },
 }); 
