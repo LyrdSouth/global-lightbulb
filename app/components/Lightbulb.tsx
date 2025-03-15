@@ -10,6 +10,7 @@ export default function Lightbulb() {
   const [error, setError] = useState<Error | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [toggleLoading, setToggleLoading] = useState(false);
+  const [realtimeStatus, setRealtimeStatus] = useState<string | null>(null);
 
   useEffect(() => {
     // Check if Supabase URL and key are configured
@@ -55,7 +56,27 @@ export default function Lightbulb() {
 
     fetchLightbulbState();
 
-    // Subscribe to changes
+    // Set up real-time subscription
+    setupRealtimeSubscription();
+
+    // Poll for updates as a fallback
+    const pollInterval = setInterval(() => {
+      fetchLightbulbState();
+    }, 5000); // Poll every 5 seconds as a fallback
+
+    return () => {
+      clearInterval(pollInterval);
+    };
+  }, []);
+
+  // Separate function to set up real-time subscription
+  const setupRealtimeSubscription = () => {
+    setRealtimeStatus('Connecting to real-time updates...');
+    
+    // First, remove any existing channels
+    supabase.removeAllChannels();
+    
+    // Create a new channel
     const channel = supabase
       .channel('lightbulb-changes')
       .on('postgres_changes', 
@@ -67,21 +88,29 @@ export default function Lightbulb() {
         (payload) => {
           console.log('Received update:', payload);
           setIsOn(payload.new.is_on);
+          setRealtimeStatus('Real-time updates active');
+          // Flash a notification that an update was received
+          setRealtimeStatus('Update received!');
+          setTimeout(() => setRealtimeStatus('Real-time updates active'), 2000);
         }
       )
       .subscribe((status) => {
         console.log('Subscription status:', status);
-        if (status === 'CHANNEL_ERROR') {
-          const channelError = new Error('Failed to subscribe to real-time updates');
-          setError(channelError);
-          setErrorMessage('Failed to connect to real-time updates. Please refresh the page.');
+        if (status === 'SUBSCRIBED') {
+          setRealtimeStatus('Real-time updates active');
+        } else if (status === 'CHANNEL_ERROR') {
+          console.error('Real-time subscription error');
+          setRealtimeStatus('Real-time updates failed - using polling fallback');
+        } else {
+          setRealtimeStatus(`Real-time status: ${status}`);
         }
       });
 
+    // Return cleanup function
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
+  };
 
   const toggleLight = async () => {
     try {
@@ -106,10 +135,15 @@ export default function Lightbulb() {
       }
       
       console.log('Toggle response:', data);
+      
       // The subscription should handle the state update, but we'll update it here as well just in case
       if (data && data.length > 0) {
         setIsOn(data[0].is_on);
       }
+      
+      // Reconnect to real-time updates to ensure we're getting updates
+      setupRealtimeSubscription();
+      
     } catch (error) {
       console.error('Error toggling lightbulb:', error);
       setErrorMessage(`Error toggling lightbulb: ${handleSupabaseError(error)}`);
@@ -117,6 +151,11 @@ export default function Lightbulb() {
     } finally {
       setToggleLoading(false);
     }
+  };
+
+  const handleReconnect = () => {
+    setRealtimeStatus('Reconnecting...');
+    setupRealtimeSubscription();
   };
 
   if (error) {
@@ -204,6 +243,26 @@ export default function Lightbulb() {
           Updating...
         </div>
       )}
+      
+      <div className="fixed bottom-20 left-0 right-0 flex justify-center">
+        <div className={`px-4 py-2 rounded-full text-xs ${
+          realtimeStatus === 'Real-time updates active' 
+            ? 'bg-green-900/50 text-green-400' 
+            : realtimeStatus === 'Update received!' 
+              ? 'bg-blue-900/50 text-blue-400 animate-pulse' 
+              : 'bg-yellow-900/50 text-yellow-400'
+        }`}>
+          {realtimeStatus || 'Connecting...'}
+          {realtimeStatus !== 'Real-time updates active' && realtimeStatus !== 'Update received!' && (
+            <button 
+              onClick={handleReconnect}
+              className="ml-2 underline"
+            >
+              Reconnect
+            </button>
+          )}
+        </div>
+      </div>
     </div>
   );
 } 
